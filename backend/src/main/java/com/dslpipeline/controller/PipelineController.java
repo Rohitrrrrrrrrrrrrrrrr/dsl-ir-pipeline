@@ -157,28 +157,33 @@ public class PipelineController {
     }
 
     @PostMapping("/end-to-end")
-    @SuppressWarnings("unchecked")
     public ResponseEntity<?> endToEnd(@RequestBody Map<String, Object> body) throws Exception {
-        String nl = (String) body.get("nl");
-        String strategy = (String) body.getOrDefault("strategy", "rule");
-        Map<String, String> schema = (Map<String, String>) body.get("schema");
-        Map<String, Object> payload = (Map<String, Object>) body.get("payload");
-        boolean persist = !Boolean.FALSE.equals(body.get("persist"));
-        boolean scenarios = Boolean.TRUE.equals(body.get("generateScenarios"));
-        return ResponseEntity.ok(
-                pipelineService.runEndToEnd(nl, strategy, schema, payload, persist, scenarios));
+        return ResponseEntity.ok(pipelineService.runEndToEnd(toRequest(body, false)));
     }
 
     @PostMapping("/from-dsl")
-    @SuppressWarnings("unchecked")
     public ResponseEntity<?> fromDsl(@RequestBody Map<String, Object> body) throws Exception {
-        RuleDSL dsl = mapper.convertValue(body.get("dsl"), RuleDSL.class);
-        Map<String, String> schema = (Map<String, String>) body.get("schema");
-        Map<String, Object> payload = (Map<String, Object>) body.get("payload");
-        boolean persist = !Boolean.FALSE.equals(body.get("persist"));
-        boolean scenarios = Boolean.TRUE.equals(body.get("generateScenarios"));
-        return ResponseEntity.ok(
-                pipelineService.runFromDsl(dsl, schema, payload, persist, scenarios));
+        return ResponseEntity.ok(pipelineService.runFromDsl(toRequest(body, true)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private com.dslpipeline.service.PipelineService.Request toRequest(
+            Map<String, Object> body, boolean fromDsl) {
+        com.dslpipeline.service.PipelineService.Request r =
+                new com.dslpipeline.service.PipelineService.Request();
+        r.nl = (String) body.get("nl");
+        r.strategy = (String) body.getOrDefault("strategy", "rule");
+        r.schema = (Map<String, String>) body.get("schema");
+        r.payload = (Map<String, Object>) body.get("payload");
+        r.persistRunLog = !Boolean.FALSE.equals(body.get("persist"));
+        r.generateScenarios = Boolean.TRUE.equals(body.get("generateScenarios"));
+        r.tenant = (String) body.get("tenant");
+        r.project = (String) body.get("project");
+        r.saveAsRuleKey = (String) body.get("saveAsRuleKey");
+        if (fromDsl) {
+            r.dsl = mapper.convertValue(body.get("dsl"), RuleDSL.class);
+        }
+        return r;
     }
 
     @GetMapping("/artifacts")

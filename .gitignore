@@ -26,3 +26,8 @@ Thumbs.db
 # Local env
 .env
 .env.local
+
+# Secrets — the LLM API key lives here, NEVER commit it
+llm-secret.properties
+backend/llm-secret.properties
+**/llm-secret.properties

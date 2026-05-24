@@ -6,6 +6,9 @@ server:
 spring:
   application:
     name: dsl-ir-pipeline
+  # Loads the gitignored secret file (key lives there, never in committed config).
+  config:
+    import: optional:file:./llm-secret.properties
   datasource:
     url: jdbc:h2:mem:dslirdb;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
     driver-class-name: org.h2.Driver
@@ -31,14 +34,29 @@ spring:
 pipeline:
   llm:
     anthropic:
-      enabled: false
-      api-key: ${ANTHROPIC_API_KEY:}
+      enabled: true
+      # Resolution: ANTHROPIC_API_KEY env var → anthropic.api.key (from the
+      # gitignored llm-secret.properties) → empty. The key is NEVER in this file.
+      api-key: ${ANTHROPIC_API_KEY:${anthropic.api.key:}}
       model: claude-sonnet-4-5-20250929
       base-url: https://api.anthropic.com
       version: 2023-06-01
 
 cors:
   allowed-origins: http://localhost:5173,http://localhost:3000
+
+# Observability — Micrometer counters exposed at /actuator/prometheus
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus,health,metrics,info
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: dsl-ir-pipeline
 
 logging:
   level:

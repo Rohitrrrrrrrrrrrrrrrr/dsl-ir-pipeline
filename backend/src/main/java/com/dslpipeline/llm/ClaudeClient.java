@@ -15,16 +15,17 @@ import java.net.http.HttpResponse;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Anthropic Claude client for the NL → SL stage.
+ * Low-level Anthropic Claude HTTP client.
  *
- * The LLM only ever TRANSLATES — it produces a structured candidate with
- * explicit assumptions, ambiguities and a confidence score. It never decides;
- * the deterministic pipeline downstream is the gatekeeper.
+ * Exposes a generic {@link #complete} call used by every LLM intent, plus a
+ * typed {@link #normalizeToSl} helper. The LLM only ever TRANSLATES — the
+ * deterministic pipeline downstream is the gatekeeper.
  *
  * Active only when ANTHROPIC_API_KEY is configured.
  *
@@ -39,7 +40,7 @@ public class ClaudeClient {
     private String apiKey;
 
     @Value("${pipeline.llm.anthropic.model:claude-sonnet-4-5-20250929}")
-    private String model;
+    private String defaultModel;
 
     @Value("${pipeline.llm.anthropic.base-url:https://api.anthropic.com}")
     private String baseUrl;
@@ -51,29 +52,38 @@ public class ClaudeClient {
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10)).build();
 
+    private String lastPromptHash;
+
     public boolean isAvailable() {
         return apiKey != null && !apiKey.isBlank();
     }
 
-    /** Most recent prompt hash — recorded into IR provenance. */
-    private String lastPromptHash;
     public String getLastPromptHash() { return lastPromptHash; }
 
-    public StructuredLogic normalizeToSl(String nl) throws Exception {
+    /**
+     * Generic completion. Returns the model's text content.
+     *
+     * @param modelId      model to use (null → configured default)
+     * @param systemPrompt optional system prompt
+     * @param userPrompt   the user message
+     */
+    public String complete(String modelId, String systemPrompt, String userPrompt) throws Exception {
         if (!isAvailable()) {
-            throw new IllegalStateException("ANTHROPIC_API_KEY not configured.");
+            throw new IllegalStateException("ANTHROPIC_API_KEY not configured — LLM features are off.");
         }
-        String prompt = buildPrompt(nl);
-        this.lastPromptHash = sha256(prompt);
+        this.lastPromptHash = sha256((systemPrompt == null ? "" : systemPrompt) + "\n" + userPrompt);
 
-        Map<String, Object> body = Map.of(
-                "model", model,
-                "max_tokens", 1536,
-                "messages", List.of(Map.of("role", "user", "content", prompt)));
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", modelId == null || modelId.isBlank() ? defaultModel : modelId);
+        body.put("max_tokens", 2048);
+        body.put("messages", List.of(Map.of("role", "user", "content", userPrompt)));
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            body.put("system", systemPrompt);
+        }
 
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/v1/messages"))
-                .timeout(Duration.ofSeconds(40))
+                .timeout(Duration.ofSeconds(45))
                 .header("Content-Type", "application/json")
                 .header("x-api-key", apiKey)
                 .header("anthropic-version", anthropicVersion)
@@ -85,7 +95,12 @@ public class ClaudeClient {
             throw new RuntimeException("Anthropic API error " + resp.statusCode() + ": " + resp.body());
         }
         JsonNode root = mapper.readTree(resp.body());
-        String text = root.path("content").path(0).path("text").asText();
+        return root.path("content").path(0).path("text").asText();
+    }
+
+    /** NL → Structured Logic (the {@code normalize_nl} intent). */
+    public StructuredLogic normalizeToSl(String nl) throws Exception {
+        String text = complete(defaultModel, null, normalizePrompt(nl));
         StructuredLogic sl = mapper.readValue(extractJson(text), StructuredLogic.class);
         if (sl.getRuleId() == null) {
             sl.setRuleId("rule_" + UUID.randomUUID().toString().substring(0, 8));
@@ -95,7 +110,7 @@ public class ClaudeClient {
         return sl;
     }
 
-    private String buildPrompt(String nl) {
+    private String normalizePrompt(String nl) {
         return """
             You translate Natural Language business rules into precise Structured Logic.
             You TRANSLATE only — never invent thresholds, never silently resolve ambiguity.
@@ -106,33 +121,26 @@ public class ClaudeClient {
               "ruleId": "rule_<short>",
               "title": "<short title>",
               "clauses": [
-                {
-                  "condition": "<path> <op> <value> [AND/OR <path> <op> <value>]",
+                { "condition": "<path> <op> <value> [AND/OR ...]",
                   "outcome": "<verb> <object>",
                   "elseOutcome": "<optional else action>",
                   "severity": "error | warning | ensure",
                   "code": "UPPER_SNAKE_CODE",
                   "message": "<human-readable message>",
-                  "confidence": 0.0-1.0
-                }
+                  "confidence": 0.0-1.0 }
               ],
-              "assumptions": ["<assumptions you had to make, visible to the author>"],
-              "ambiguities": ["<unresolved ambiguities needing author input>"],
+              "assumptions": ["..."],
+              "ambiguities": ["..."],
               "confidence": 0.0-1.0
             }
-
-            Rules for the "condition" field:
-              - use dot.notation paths (e.g. customer.age)
-              - operators: < <= > >= == != , and 'in' / 'not in' with [a, b] lists
-              - join multiple comparisons with uppercase AND / OR
-              - date functions allowed: calculateAge(birthDate, refDate), compareDates(a, b),
-                diffDays(a, b), isBetween(x, start, end, true)
+            Operators: < <= > >= == != , 'in' / 'not in' with [a,b] lists. Dot.notation paths.
 
             Natural-language rule:
             """ + nl;
     }
 
-    private String extractJson(String s) {
+    /** Extract the first complete JSON object from an LLM response. */
+    public String extractJson(String s) {
         int start = s.indexOf('{');
         int end = s.lastIndexOf('}');
         if (start < 0 || end <= start) {

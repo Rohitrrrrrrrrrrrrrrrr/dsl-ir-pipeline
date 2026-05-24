@@ -59,6 +59,9 @@ public class ExtensionRegistry {
         return dot >= 0 ? name.substring(dot + 1) : name;
     }
 
+    /** Custom (DB-backed) functions registered at runtime by CustomFunctionService. */
+    private final Map<String, ExtensionFunction> customByName = new LinkedHashMap<>();
+
     /** Resolve a function by namespaced or bare name; null if unknown. */
     public ExtensionFunction resolve(String name) {
         if (name == null) return null;
@@ -69,15 +72,40 @@ public class ExtensionRegistry {
         return resolve(name) != null;
     }
 
-    /** Canonical (de-duplicated) list of all registered functions. */
+    /**
+     * Register a DB-backed custom function. Custom functions are namespaced and
+     * may not shadow a core function.
+     */
+    public void registerCustomFunction(ExtensionFunction f) {
+        if (isCoreNamespace(f.getPack())) {
+            throw new IllegalArgumentException(
+                    "Custom function may not use core namespace: " + f.getPack());
+        }
+        byName.put(f.getName(), f);
+        customByName.put(f.getName(), f);
+    }
+
+    /** Drop all custom functions (called before a reload). */
+    public void clearCustomFunctions() {
+        for (String n : customByName.keySet()) byName.remove(n);
+        customByName.clear();
+    }
+
+    public List<ExtensionFunction> customFunctions() {
+        return new ArrayList<>(customByName.values());
+    }
+
+    /** All registered functions — core packs + project pack + DB-backed custom. */
     public List<ExtensionFunction> all() {
-        return List.copyOf(canonical);
+        List<ExtensionFunction> out = new ArrayList<>(canonical);
+        out.addAll(customByName.values());
+        return out;
     }
 
     /** All human-readable signatures, e.g. for the Workbench palette. */
     public List<String> signatures() {
         List<String> out = new ArrayList<>();
-        for (ExtensionFunction f : canonical) out.add(f.signature());
+        for (ExtensionFunction f : all()) out.add(f.signature());
         return out;
     }
 }

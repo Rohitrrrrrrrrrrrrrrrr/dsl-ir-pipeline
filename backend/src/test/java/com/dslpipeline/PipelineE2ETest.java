@@ -168,9 +168,14 @@ class PipelineE2ETest {
 
     @Test
     void endToEnd_full_pipeline_status_ok() throws Exception {
-        Map<String, Object> out = pipelineService.runEndToEnd(
-                CANONICAL, "rule", Map.of("customer.age", "number"),
-                Map.of("customer", Map.of("age", 16)), false, true);
+        PipelineService.Request req = new PipelineService.Request();
+        req.nl = CANONICAL;
+        req.strategy = "rule";
+        req.schema = Map.of("customer.age", "number");
+        req.payload = Map.of("customer", Map.of("age", 16));
+        req.persistRunLog = false;
+        req.generateScenarios = true;
+        Map<String, Object> out = pipelineService.runEndToEnd(req);
         assertEquals("OK", out.get("status"));
         IrExecutor.ExecutionResult exec = (IrExecutor.ExecutionResult) out.get("stage10_execution");
         assertFalse(exec.passed);
@@ -185,11 +190,13 @@ class PipelineE2ETest {
                 "calculateAge(applicant.dateOfBirth, loan.startDate)", "<", 18L)));
         dsl.setActions(List.of(new DslAction.AddErrorAction("LOAN_DECLINED", "under 18")));
 
-        Map<String, Object> out = pipelineService.runFromDsl(dsl,
-                Map.of("applicant.dateOfBirth", "date", "loan.startDate", "date"),
-                Map.of("applicant", Map.of("dateOfBirth", "2010-06-01"),
-                        "loan", Map.of("startDate", "2026-05-20")),
-                false, false);
+        PipelineService.Request req = new PipelineService.Request();
+        req.dsl = dsl;
+        req.schema = Map.of("applicant.dateOfBirth", "date", "loan.startDate", "date");
+        req.payload = Map.of("applicant", Map.of("dateOfBirth", "2010-06-01"),
+                "loan", Map.of("startDate", "2026-05-20"));
+        req.persistRunLog = false;
+        Map<String, Object> out = pipelineService.runFromDsl(req);
         assertEquals("OK", out.get("status"));
         IrExecutor.ExecutionResult exec = (IrExecutor.ExecutionResult) out.get("stage10_execution");
         assertTrue(exec.conditionsMet, "applicant aged ~15 should be under 18");
@@ -212,8 +219,11 @@ class PipelineE2ETest {
 
     @Test
     void unparseable_input_blocks_at_sl_lint() throws Exception {
-        Map<String, Object> out = pipelineService.runEndToEnd(
-                "asdf qwer zxcv", "rule", Map.of(), Map.of(), false, false);
+        PipelineService.Request req = new PipelineService.Request();
+        req.nl = "asdf qwer zxcv";
+        req.strategy = "rule";
+        req.persistRunLog = false;
+        Map<String, Object> out = pipelineService.runEndToEnd(req);
         assertEquals("BLOCKED_AT_SL_LINT", out.get("status"));
     }
 }

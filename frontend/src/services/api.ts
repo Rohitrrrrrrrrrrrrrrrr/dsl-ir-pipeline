@@ -32,9 +32,11 @@ export interface PipelineResponse {
   stage6_typeCheck?: any;
   stage7_optimization?: any;
   stage8_ir?: any;
-  stage9_artifactId?: number;
+  stage8b_savedRule?: any;
+  stage9_runLogId?: number;
   stage10_execution?: any;
   stage11_scenarios?: any[];
+  resolvedSchema?: Record<string, string>;
 }
 
 export interface ExtensionFn {

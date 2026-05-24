@@ -184,9 +184,14 @@ export default function App() {
           <div className="status-line">
             <strong>Pipeline status:</strong>{' '}
             <span className={resp.status === 'OK' ? 'status-ok' : 'status-err'}>{resp.status}</span>
-            {resp.stage9_artifactId != null && (
+            {resp.stage9_runLogId != null && (
               <span style={{ marginLeft: 16, color: 'var(--muted)' }}>
-                IR artifact #{resp.stage9_artifactId}
+                run-log #{resp.stage9_runLogId}
+              </span>
+            )}
+            {resp.stage8b_savedRule != null && (
+              <span style={{ marginLeft: 16, color: 'var(--ok)' }}>
+                saved rule: {resp.stage8b_savedRule.ruleKey} v{resp.stage8b_savedRule.version}
               </span>
             )}
           </div>

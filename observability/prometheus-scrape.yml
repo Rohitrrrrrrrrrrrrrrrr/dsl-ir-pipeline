@@ -1,0 +1,27 @@
+# Prometheus scrape configuration for the DSL → IR pipeline (standalone).
+#
+# Drop into /etc/prometheus/prometheus.yml under `scrape_configs:` (or include
+# via `scrape_config_files`). `metrics_path` matches Spring Boot Actuator's
+# /actuator/prometheus endpoint, which is enabled in application.yml under
+# `management.endpoints.web.exposure.include`.
+#
+# All pipeline-specific counters live under the `dslpipeline.` namespace and are
+# exposed via Micrometer; the PipelineMetrics class is the catalogue source of
+# truth (see observability/README.md).
+
+scrape_configs:
+  - job_name: dsl-ir-pipeline
+    metrics_path: /actuator/prometheus
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - localhost:8090     # adjust to your deployment host:port
+        labels:
+          service: dsl-ir-pipeline
+          env: dev             # override per environment
+    # Actuator requires no auth in dev. If you secure the endpoint, supply
+    # credentials here:
+    # basic_auth:
+    #   username: prom
+    #   password: <secret>

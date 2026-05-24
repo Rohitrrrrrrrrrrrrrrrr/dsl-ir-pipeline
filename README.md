@@ -43,7 +43,7 @@ NL ──▶ SL ──▶ SL-lint ──▶ DSL ──▶ DSL-validate ──▶
 ## What makes this build "compiler-grade"
 
 - **Sealed type system** — `ConditionNode` (9 types) and `DslAction` (4 types)
-  are Java 21 sealed interfaces; every traversal is an exhaustive `switch`.
+  are sealed interfaces; every traversal is an exhaustive `switch`.
 - **Extension registry** — core packs (`date`, `collection`, `string`, `logic`)
   + an example project pack (`acme`), namespaced and merged
   (`MergedRegistry = Core ⊕ Project`). Functions carry typed signatures used by
@@ -69,7 +69,7 @@ NL ──▶ SL ──▶ SL-lint ──▶ DSL ──▶ DSL-validate ──▶
 
 ```
 dsl-ir-pipeline-standalone/
-├── backend/   Spring Boot 3.3 · Java 21
+├── backend/   Spring Boot 3.5.13 · Java 25
 │   └── src/main/java/com/dslpipeline/
 │       ├── numeric/      NumericProfile · DecimalMath
 │       ├── term/         Term (sealed) · TermParser · TermEvaluator
@@ -93,7 +93,7 @@ dsl-ir-pipeline-standalone/
 
 ## Prerequisites
 
-- **JDK 21** (`java --version` must report 21.x)
+- **JDK 25** (LTS — `java --version` must report 25.x; the build compiles with `--release 25`)
 - **Maven 3.9+**
 - **Node 18+**
 - *(optional)* `ANTHROPIC_API_KEY` for the Claude NL→SL strategy
@@ -233,6 +233,107 @@ locale surprises.
 
 ---
 
+## Data layer — faithful to the real ZenLogIQ schema
+
+The pipeline above is backed by a persistence layer that mirrors the actual
+ZenLogIQ tables (verified against `database/migrations/V1__initial_schema.sql`
+and the databag/schema/function migrations):
+
+| Table | Purpose |
+|-------|---------|
+| `core_tenant` / `core_project` | Multi-tenant backbone — everything hangs off a project |
+| `rule_definition` | The authored rule record (identity, intent, structured content) |
+| `rule_dsl_artifact` | Versioned human-authored DSL form of a rule |
+| `rule_ir_artifact` | Canonical compiled IR form (sourced from a DSL artifact) |
+| `config_schema` | Domain/DAL schema with a DRAFT→ACTIVE lifecycle |
+| `config_databag` | Declared runtime variables (`fields[]` JSON) |
+| `custom_extension_function` | Project functions stored as **SpEL** expressions |
+
+Key point on faithfulness: a rule is **not** stored as `rule_conditions` /
+`rule_actions` rows. ZenLogIQ stores rules as **DSL artifacts compiled to IR
+artifacts** — `rule_definition → rule_dsl_artifact → rule_ir_artifact`. This
+project implements that exactly.
+
+**DataBags** declare `fields[]` ({path, type, defaultValue}); at execution start
+those defaults seed `payload["dataBag"]`. **Custom functions** are SpEL bodies
+loaded from the DB and registered into the `ExtensionRegistry` at runtime — no
+redeployment to add a project function.
+
+On startup a `DataInitializer` seeds a demo tenant (`acme`), project (`lending`),
+an ACTIVE schema, a `pricing` databag and a `custom.incomeRiskBand` SpEL function.
+
+### Data-layer REST API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET/POST /api/tenants`, `…/{tenant}/projects` | Tenant + project CRUD |
+| `GET/POST/PUT /api/schemas`, `…/{id}/transition` | config_schema CRUD + lifecycle |
+| `GET …/schemas/{tenant}/{project}/resolve` | Effective ACTIVE schema |
+| `GET/POST/PUT/DELETE /api/databags` | config_databag CRUD |
+| `POST /api/databags/seed-preview` | Preview payload after databag seeding |
+| `GET/POST/PUT/DELETE /api/functions` | custom_extension_function CRUD |
+| `POST /api/functions/{id}/test` | Invoke a SpEL function with args |
+| `GET /api/rules?tenant=&project=` | List authored rules |
+| `GET /api/rules/{tenant}/{project}/{ruleKey}` | Rule + DSL/IR artifact history |
+| `POST /api/rules/{tenant}/{project}/{ruleKey}/execute` | Execute a stored rule |
+| `POST /api/pipeline/end-to-end` with `tenant`,`project`,`saveAsRuleKey` | Compile + persist a rule across the 3 tables |
+
+### LLM integration (multi-intent, faithful to `24-live-llm-integration.md`)
+
+The LLM only ever **translates / proposes / explains** — it never executes a
+rule or makes the decision. Per-intent model routing mirrors `ai_model_policy`.
+
+| Endpoint | Intent |
+|----------|--------|
+| `POST /api/llm/normalize` | `normalize_nl` — NL → Structured Logic |
+| `POST /api/llm/translate` | `translate_dsl` — Structured Logic → RuleDSL |
+| `POST /api/llm/narrate` | `structured_to_nl` — RuleDSL → plain English |
+| `POST /api/llm/fix` | `fix_dsl` — self-healing DSL repair loop (max 3 attempts) |
+| `POST /api/llm/explain` | `explain_decision` — "why" narrative from a trace |
+| `GET/PUT /api/llm/model-policy` | Per-intent model routing table |
+
+All LLM endpoints require `ANTHROPIC_API_KEY`; the deterministic pipeline works
+fully without it.
+
+## Observability (Micrometer → Prometheus → Grafana)
+
+The backend exposes Micrometer metrics under the `dslpipeline.*` namespace via
+Spring Boot Actuator at **`/actuator/prometheus`**. `PipelineMetrics` instruments
+every run: pipeline status, stage blocks, DSL-validation outcome, IR execution
+pass/fail, rules persisted, LLM calls by intent, self-heal retry attempts +
+success rate, and an end-to-end duration timer (p50/p95).
+
+The `observability/` folder ships a drop-in `prometheus-scrape.yml`, an
+importable `grafana-dashboard.json` (7 panels), and a metric-catalogue `README.md`.
+Quick check once the backend is up:
+
+```
+curl http://localhost:8090/actuator/prometheus | findstr dslpipeline
+```
+
+## Conformance & regression test packs (QA deploy-gate)
+
+Two test packs harden the engine for QA:
+
+**Money conformance suite** (`MoneyConformanceTest`) — the mandatory deploy-gate.
+A `Money` value type (BigDecimal amount + ISO-4217 currency), `CurrencyProfile`
+(per-currency scale, **HALF_EVEN** rounding) and `MoneyMath` (currency-safe
+add/subtract/multiply/percentage/sum) are exercised across 10 sections: JSON↔
+BigDecimal fidelity (no double leakage), scale invariants, negative-floor
+subtraction, the classic rounding traps (`1.005`→`1.00`, `2.675`→`2.68`),
+aggregation, null defaults, **mixed-currency rejection**, ordering/idempotency,
+large-number stress, and JSON round-trip. Every test asserts all four money
+invariants: numeric value, scale, rounding mode, currency safety. *If any test
+here fails, do not deploy.*
+
+**Claims collection regression pack** (`ClaimsCollectionTest`) — exercises the
+collection rule patterns from the QA matrix that the engine evaluates
+deterministically: existence (`ANY`), absence (`NONE` = `NOT EXISTS`), universal
+(`ALL`), and counting (`COUNT WHERE`). Each rule (`ZR_COLL_1_ANY`,
+`ZR_COLL_2_NONE`, `ZR_COLL_3_EXISTS`, `R6`, `R7`, `R8`, …) is validated,
+compiled to IR and run against canonical trigger / no-trigger claim payloads,
+including the empty-collection edge cases (`ANY`→false, `ALL`→vacuously true).
+
 ## How this compares to the reference Git repo
 
 The ZenLogIQ repo is a large production system (32 controllers, 50+ tables,
@@ -260,7 +361,7 @@ inspectable and exhaustively testable by QA.
 
 | Symptom | Fix |
 |---------|-----|
-| `release version 21 not supported` | Install JDK 21; set `JAVA_HOME` |
+| `release version 25 not supported` / `invalid target release: 25` | The compiling JDK is older than 25 — install JDK 25, point `JAVA_HOME` at it, reopen the shell |
 | Frontend network errors | Confirm backend on `:8090` (`curl .../health`) |
 | Claude option disabled | `ANTHROPIC_API_KEY` not set — `export`, restart backend |
 | `Port 8090 in use` | Change `server.port` in `application.yml` + Vite proxy |
